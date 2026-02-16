@@ -1,16 +1,21 @@
 """
 Module de récupération automatique de médias (vidéos/images).
-Utilise l'API Pexels (gratuite) pour trouver du contenu en rapport avec le texte.
+Utilise l'API Pexels (gratuite) + Pixabay (fallback gratuit) pour trouver
+du contenu en rapport avec le texte.
 Extrait automatiquement les mots-clés du script pour la recherche.
+Optimisé : téléchargements concurrents, chunks plus gros (32KB).
 """
 import os
 import re
-import json
-import random
 import hashlib
-import requests
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
+
+import requests
+
+from core.hardware import get_profile
 
 
 # Mots vides français et anglais à exclure de l'extraction de mots-clés
@@ -44,26 +49,49 @@ ALL_STOP_WORDS = STOP_WORDS_FR | STOP_WORDS_EN
 
 
 class MediaFetcher:
-    """Récupère automatiquement des vidéos/images de stock via Pexels API."""
+    """Récupère automatiquement des vidéos/images de stock via Pexels + Pixabay (fallback)."""
 
     PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
     PEXELS_PHOTO_URL = "https://api.pexels.com/v1/search"
+    PIXABAY_API_URL = "https://pixabay.com/api/"
+    PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 
-    def __init__(self, api_key: Optional[str] = None, cache_dir: str = "assets/backgrounds"):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        pixabay_key: Optional[str] = None,
+        cache_dir: str = "assets/backgrounds",
+    ):
         """
         Args:
             api_key: Clé API Pexels (gratuite sur https://www.pexels.com/api/).
                      Si None, cherche dans la variable d'env PEXELS_API_KEY.
+            pixabay_key: Clé API Pixabay (gratuite sur https://pixabay.com/api/docs/).
+                         Si None, cherche dans la variable d'env PIXABAY_API_KEY.
             cache_dir: Dossier de cache pour les fichiers téléchargés.
         """
         self.api_key = api_key or os.environ.get("PEXELS_API_KEY", "")
+        self.pixabay_key = pixabay_key or os.environ.get("PIXABAY_API_KEY", "")
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._session = requests.Session()
+        if self.pexels_available:
+            self._session.headers["Authorization"] = self.api_key
+
+    @property
+    def pexels_available(self) -> bool:
+        """Vérifie si l'API Pexels est configurée."""
+        return len(self.api_key) > 10
+
+    @property
+    def pixabay_available(self) -> bool:
+        """Vérifie si l'API Pixabay est configurée."""
+        return len(self.pixabay_key) > 5
 
     @property
     def is_available(self) -> bool:
-        """Vérifie si l'API Pexels est configurée."""
-        return len(self.api_key) > 10
+        """Vérifie si au moins une API de médias est configurée."""
+        return self.pexels_available or self.pixabay_available
 
     def extract_keywords(self, text: str, max_keywords: int = 3) -> list[str]:
         """
@@ -113,10 +141,9 @@ class MediaFetcher:
         Returns:
             Liste de dicts avec {url, width, height, duration, thumbnail}
         """
-        if not self.is_available:
+        if not self.pexels_available:
             return []
 
-        headers = {"Authorization": self.api_key}
         params = {
             "query": query,
             "orientation": orientation,
@@ -126,7 +153,7 @@ class MediaFetcher:
 
         try:
             print(f"🔍 Recherche Pexels vidéos : '{query}'...")
-            resp = requests.get(self.PEXELS_VIDEO_URL, headers=headers, params=params, timeout=10)
+            resp = self._session.get(self.PEXELS_VIDEO_URL, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
@@ -173,10 +200,9 @@ class MediaFetcher:
         Returns:
             Liste de dicts avec {url, width, height}
         """
-        if not self.is_available:
+        if not self.pexels_available:
             return []
 
-        headers = {"Authorization": self.api_key}
         params = {
             "query": query,
             "orientation": orientation,
@@ -186,7 +212,7 @@ class MediaFetcher:
 
         try:
             print(f"🔍 Recherche Pexels photos : '{query}'...")
-            resp = requests.get(self.PEXELS_PHOTO_URL, headers=headers, params=params, timeout=10)
+            resp = self._session.get(self.PEXELS_PHOTO_URL, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
@@ -208,6 +234,99 @@ class MediaFetcher:
         print(f"   → {len(results)} photo(s) trouvée(s)")
         return results
 
+    # ── Pixabay (fallback gratuit) ──────────────────────────────────────
+
+    def search_pixabay_videos(
+        self,
+        query: str,
+        orientation: str = "portrait",
+        per_page: int = 5,
+    ) -> list[dict]:
+        """Cherche des vidéos sur Pixabay (fallback si Pexels échoue)."""
+        if not self.pixabay_available:
+            return []
+
+        # Pixabay utilise "vertical" au lieu de "portrait"
+        px_orientation = "vertical" if orientation == "portrait" else "horizontal"
+        params = {
+            "key": self.pixabay_key,
+            "q": query,
+            "orientation": px_orientation,
+            "per_page": per_page,
+            "safesearch": "true",
+        }
+
+        try:
+            print(f"🔍 Recherche Pixabay vidéos : '{query}'...")
+            resp = self._session.get(self.PIXABAY_VIDEO_URL, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"⚠️ Erreur Pixabay vidéo : {e}")
+            return []
+
+        results = []
+        for hit in data.get("hits", []):
+            videos = hit.get("videos", {})
+            # Préférer la version "large" puis "medium"
+            for quality in ("large", "medium"):
+                vf = videos.get(quality, {})
+                if vf.get("url"):
+                    results.append({
+                        "url": vf["url"],
+                        "width": vf.get("width", 0),
+                        "height": vf.get("height", 0),
+                        "duration": hit.get("duration", 0),
+                        "pixabay_id": hit.get("id"),
+                    })
+                    break
+
+        print(f"   → {len(results)} vidéo(s) Pixabay trouvée(s)")
+        return results
+
+    def search_pixabay_photos(
+        self,
+        query: str,
+        orientation: str = "portrait",
+        per_page: int = 5,
+    ) -> list[dict]:
+        """Cherche des photos sur Pixabay (fallback si Pexels échoue)."""
+        if not self.pixabay_available:
+            return []
+
+        px_orientation = "vertical" if orientation == "portrait" else "horizontal"
+        params = {
+            "key": self.pixabay_key,
+            "q": query,
+            "orientation": px_orientation,
+            "per_page": per_page,
+            "image_type": "photo",
+            "safesearch": "true",
+        }
+
+        try:
+            print(f"🔍 Recherche Pixabay photos : '{query}'...")
+            resp = self._session.get(self.PIXABAY_API_URL, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"⚠️ Erreur Pixabay photo : {e}")
+            return []
+
+        results = []
+        for hit in data.get("hits", []):
+            url = hit.get("largeImageURL") or hit.get("webformatURL")
+            if url:
+                results.append({
+                    "url": url,
+                    "width": hit.get("imageWidth", 0),
+                    "height": hit.get("imageHeight", 0),
+                    "pixabay_id": hit.get("id"),
+                })
+
+        print(f"   → {len(results)} photo(s) Pixabay trouvée(s)")
+        return results
+
     def download_file(self, url: str, filename: Optional[str] = None) -> str:
         """
         Télécharge un fichier et le met en cache.
@@ -227,11 +346,12 @@ class MediaFetcher:
 
         try:
             print(f"⬇️ Téléchargement : {url[:80]}...")
-            resp = requests.get(url, timeout=60, stream=True)
+            resp = self._session.get(url, timeout=60, stream=True)
             resp.raise_for_status()
 
             with open(filepath, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
+                # 32KB chunks — mieux pour NVMe/SSD
+                for chunk in resp.iter_content(chunk_size=32768):
                     f.write(chunk)
 
             print(f"✅ Téléchargé : {filepath}")
@@ -239,6 +359,17 @@ class MediaFetcher:
         except Exception as e:
             print(f"❌ Erreur téléchargement : {e}")
             return ""
+
+    def download_multiple(self, urls: list[str]) -> list[str]:
+        """Télécharge plusieurs fichiers en parallèle."""
+        results = []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(self.download_file, url): url for url in urls}
+            for future in as_completed(futures):
+                path = future.result()
+                if path:
+                    results.append(path)
+        return results
 
     def auto_fetch_background(
         self,
@@ -248,7 +379,8 @@ class MediaFetcher:
     ) -> dict:
         """
         Pipeline automatique : extrait les mots-clés du texte, cherche
-        un média sur Pexels, le télécharge, et retourne le chemin local.
+        un média sur Pexels (puis Pixabay en fallback), le télécharge,
+        et retourne le chemin local.
 
         Args:
             text: Le script/texte de la vidéo
@@ -259,7 +391,7 @@ class MediaFetcher:
             Dict avec {path, type, keywords} ou {path: "", type: "none"} si échec
         """
         if not self.is_available:
-            print("⚠️ Pas de clé API Pexels → fond uni par défaut")
+            print("⚠️ Pas de clé API (Pexels/Pixabay) → fond uni par défaut")
             return {"path": "", "type": "none", "keywords": []}
 
         # Extraire les mots-clés
@@ -270,33 +402,61 @@ class MediaFetcher:
         query = " ".join(keywords)
         print(f"🔑 Mots-clés extraits : {keywords}")
 
-        # Chercher des vidéos d'abord
-        if prefer_video:
-            videos = self.search_videos(query, orientation=orientation)
-            if videos:
-                chosen = random.choice(videos[:3])  # Varier un peu
-                local_path = self.download_file(chosen["url"])
-                if local_path:
-                    return {"path": local_path, "type": "video", "keywords": keywords}
+        # ── 1. Pexels (prioritaire) ──────────────────────────────────
+        if self.pexels_available:
+            if prefer_video:
+                videos = self.search_videos(query, orientation=orientation)
+                if videos:
+                    chosen = random.choice(videos[:3])
+                    local_path = self.download_file(chosen["url"])
+                    if local_path:
+                        return {"path": local_path, "type": "video", "keywords": keywords}
 
-        # Fallback sur les photos
-        photos = self.search_photos(query, orientation=orientation)
-        if photos:
-            chosen = random.choice(photos[:3])
-            local_path = self.download_file(chosen["url"])
-            if local_path:
-                return {"path": local_path, "type": "image", "keywords": keywords}
-
-        # Essayer avec des mots-clés plus génériques
-        if len(keywords) > 1:
-            print("🔄 Retry avec mot-clé unique...")
-            fallback_query = keywords[0]
-            photos = self.search_photos(fallback_query, orientation=orientation)
+            photos = self.search_photos(query, orientation=orientation)
             if photos:
                 chosen = random.choice(photos[:3])
                 local_path = self.download_file(chosen["url"])
                 if local_path:
-                    return {"path": local_path, "type": "image", "keywords": [fallback_query]}
+                    return {"path": local_path, "type": "image", "keywords": keywords}
+
+        # ── 2. Pixabay (fallback) ────────────────────────────────────
+        if self.pixabay_available:
+            print("🔄 Fallback Pixabay...")
+            if prefer_video:
+                videos = self.search_pixabay_videos(query, orientation=orientation)
+                if videos:
+                    chosen = random.choice(videos[:3])
+                    local_path = self.download_file(chosen["url"])
+                    if local_path:
+                        return {"path": local_path, "type": "video", "keywords": keywords}
+
+            photos = self.search_pixabay_photos(query, orientation=orientation)
+            if photos:
+                chosen = random.choice(photos[:3])
+                local_path = self.download_file(chosen["url"])
+                if local_path:
+                    return {"path": local_path, "type": "image", "keywords": keywords}
+
+        # ── 3. Retry avec mot-clé unique ─────────────────────────────
+        if len(keywords) > 1:
+            print("🔄 Retry avec mot-clé unique...")
+            fallback_query = keywords[0]
+
+            if self.pexels_available:
+                photos = self.search_photos(fallback_query, orientation=orientation)
+                if photos:
+                    chosen = random.choice(photos[:3])
+                    local_path = self.download_file(chosen["url"])
+                    if local_path:
+                        return {"path": local_path, "type": "image", "keywords": [fallback_query]}
+
+            if self.pixabay_available:
+                photos = self.search_pixabay_photos(fallback_query, orientation=orientation)
+                if photos:
+                    chosen = random.choice(photos[:3])
+                    local_path = self.download_file(chosen["url"])
+                    if local_path:
+                        return {"path": local_path, "type": "image", "keywords": [fallback_query]}
 
         print("⚠️ Aucun média trouvé → fond uni par défaut")
         return {"path": "", "type": "none", "keywords": keywords}

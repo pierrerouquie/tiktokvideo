@@ -2,10 +2,14 @@
 Assemblage vidéo avec FFmpeg.
 Supporte : fond vidéo (loop), fond image (Ken Burns zoom/pan), fond uni.
 Format de sortie : 1080x1920 (9:16 TikTok), H.264 + AAC.
+Optimisé : multi-threading FFmpeg (12 threads Ryzen 7 5700X3D),
+           VAAPI hardware encoding sur Linux/AMD, NVENC sur NVIDIA.
 """
 import subprocess
 import shutil
 from pathlib import Path
+
+from core.hardware import get_profile
 
 
 class VideoMaker:
@@ -22,6 +26,35 @@ class VideoMaker:
                 "  Mac: brew install ffmpeg\n"
                 "  Windows: choco install ffmpeg"
             )
+        self._hw = get_profile()
+
+    def _encoding_args(self) -> list[str]:
+        """Paramètres d'encodage optimisés selon le hardware détecté."""
+        hw = self._hw
+
+        if hw.ffmpeg_hw_accel == "vaapi":
+            # AMD RX 6950 XT VAAPI : encodage hardware H.264
+            return [
+                "-vaapi_device", "/dev/dri/renderD128",
+                "-vf", "format=nv12,hwupload",
+                "-c:v", "h264_vaapi",
+                "-qp", "23",
+            ]
+        elif hw.ffmpeg_hw_accel == "nvenc":
+            # NVIDIA NVENC
+            return [
+                "-c:v", "h264_nvenc",
+                "-preset", "p4",
+                "-cq", "23",
+            ]
+        else:
+            # CPU software encoding — optimisé multi-thread
+            return [
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23",
+                "-threads", str(hw.ffmpeg_threads),
+            ]
 
     def create(
         self,
@@ -83,11 +116,26 @@ class VideoMaker:
         else:
             cmd = self._cmd_color_bg(bg_color, audio_path, sub_filter, duration, output_path)
 
-        print(f"🎬 Assemblage vidéo ({background_type}) — {duration:.1f}s...")
+        hw = self._hw
+        enc_info = hw.ffmpeg_hw_accel or f"software {hw.ffmpeg_threads}t"
+        print(f"🎬 Assemblage vidéo ({background_type}, {enc_info}) — {duration:.1f}s...")
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg erreur :\n{result.stderr[-500:]}")
+            # Fallback vers encodage software si le hardware échoue
+            if hw.ffmpeg_hw_accel:
+                print(f"⚠️ Encodage hardware ({hw.ffmpeg_hw_accel}) échoué, fallback software...")
+                hw.ffmpeg_hw_accel = ""
+                if background_type == "video":
+                    cmd = self._cmd_video_bg(background_path, audio_path, sub_filter, duration, output_path)
+                elif background_type == "image":
+                    cmd = self._cmd_image_bg(background_path, audio_path, sub_filter, duration, output_path)
+                else:
+                    cmd = self._cmd_color_bg(bg_color, audio_path, sub_filter, duration, output_path)
+                result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg erreur :\n{result.stderr[-500:]}")
 
         size_mb = Path(output_path).stat().st_size / (1024 * 1024)
         print(f"✅ Vidéo : {output_path} ({size_mb:.1f} Mo)")
@@ -97,6 +145,7 @@ class VideoMaker:
 
     def _cmd_video_bg(self, bg: str, audio: str, subs: str, dur: float, out: str) -> list[str]:
         """Fond vidéo : loop + crop + sous-titres."""
+        enc = self._encoding_args()
         return [
             "ffmpeg", "-y",
             "-stream_loop", "-1", "-i", bg,
@@ -106,7 +155,7 @@ class VideoMaker:
             f"crop={self.WIDTH}:{self.HEIGHT},"
             f"{subs}[v]",
             "-map", "[v]", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            *enc,
             "-c:a", "aac", "-b:a", "192k",
             "-shortest", "-t", str(dur),
             out,
@@ -114,9 +163,9 @@ class VideoMaker:
 
     def _cmd_image_bg(self, bg: str, audio: str, subs: str, dur: float, out: str) -> list[str]:
         """Fond image : Ken Burns (zoom progressif) + sous-titres."""
-        # zoompan : zoom de 1.0 → 1.15 sur la durée, 30 fps
         fps = 30
         total_frames = int(dur * fps)
+        enc = self._encoding_args()
         return [
             "ffmpeg", "-y",
             "-loop", "1", "-i", bg,
@@ -127,7 +176,7 @@ class VideoMaker:
             f":d={total_frames}:s={self.WIDTH}x{self.HEIGHT}:fps={fps},"
             f"{subs}[v]",
             "-map", "[v]", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            *enc,
             "-c:a", "aac", "-b:a", "192k",
             "-shortest", "-t", str(dur),
             out,
@@ -136,6 +185,7 @@ class VideoMaker:
     def _cmd_color_bg(self, color: str, audio: str, subs: str, dur: float, out: str) -> list[str]:
         """Fond uni coloré."""
         color_clean = color.lstrip("#")
+        enc = self._encoding_args()
         return [
             "ffmpeg", "-y",
             "-f", "lavfi",
@@ -143,7 +193,7 @@ class VideoMaker:
             "-i", audio,
             "-filter_complex", f"[0:v]{subs}[v]",
             "-map", "[v]", "-map", "1:a",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            *enc,
             "-c:a", "aac", "-b:a", "192k",
             "-shortest",
             out,

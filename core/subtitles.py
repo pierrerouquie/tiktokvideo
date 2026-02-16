@@ -1,29 +1,56 @@
 """
-Génération de sous-titres avec Faster-Whisper (large-v3).
+Génération de sous-titres avec Faster-Whisper 1.2+ (large-v3-turbo).
 Produit des fichiers SRT avec timestamps mot par mot.
+large-v3-turbo : 6x plus rapide que large-v3, 809M params, -1-2% accuracy.
+Optimisé : utilise tous les threads CPU (Ryzen 7 5700X3D = 16 threads).
+Note : CTranslate2 (backend de Faster-Whisper) ne supporte pas ROCm,
+       donc on utilise le CPU avec int8 quantization + multi-threading.
 """
 from faster_whisper import WhisperModel
 from pathlib import Path
+
+from core.hardware import get_profile
 
 
 class SubtitleGenerator:
     """Transcrit un audio en sous-titres SRT synchronisés."""
 
-    def __init__(self, model_size: str = "large-v3", device: str = "auto"):
+    def __init__(self, model_size: str = "large-v3-turbo", device: str = "auto"):
         """
         Args:
-            model_size: "large-v3" (meilleur), "medium", "small" (rapide)
+            model_size: "large-v3-turbo" (meilleur rapport qualité/vitesse, 6x plus rapide),
+                        "large-v3" (précision max), "medium", "small" (rapide)
             device: "cuda", "cpu", ou "auto"
         """
+        hw = get_profile()
+
         if device == "auto":
-            import torch
-            compute_type = "float16" if torch.cuda.is_available() else "int8"
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            # CTranslate2 supporte CUDA (NVIDIA) mais PAS ROCm (AMD)
+            # Pour AMD GPU (RX 6950 XT) → forcer CPU avec max threads
+            if hw.gpu_backend == "cuda":
+                device = "cuda"
+                compute_type = "float16"
+                cpu_threads = 0  # Géré par CUDA
+            else:
+                device = "cpu"
+                compute_type = "int8"
+                # Ryzen 7 5700X3D : 8 cores / 16 threads, 96MB L3
+                # int8 + multi-thread = très rapide sur ce CPU
+                cpu_threads = hw.cpu_threads
         else:
             compute_type = "float16" if device == "cuda" else "int8"
+            cpu_threads = hw.cpu_threads if device == "cpu" else 0
 
-        print(f"⏳ Chargement Faster-Whisper ({model_size}, {device})...")
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        print(f"⏳ Chargement Faster-Whisper ({model_size}, {device}, {compute_type})...")
+        if device == "cpu":
+            print(f"   → {cpu_threads} threads CPU, int8 quantization")
+
+        self.model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            cpu_threads=cpu_threads,
+        )
         print("✅ Modèle Whisper chargé !")
 
     def generate_srt(
@@ -49,7 +76,11 @@ class SubtitleGenerator:
 
         print(f"📝 Transcription [{style}] : {audio_path}...")
         segments, _ = self.model.transcribe(
-            audio_path, language=language, word_timestamps=True,
+            audio_path,
+            language=language,
+            word_timestamps=True,
+            beam_size=5,
+            vad_filter=True,
         )
 
         srt_entries = []

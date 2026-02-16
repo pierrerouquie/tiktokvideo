@@ -2,10 +2,12 @@
 """
 🎬 TikTok Voice Generator — CLI
 Génère une vidéo TikTok en une commande. Tout est automatisé.
+Optimisé : auto-détection GPU (ROCm/CUDA), multi-threading, VAAPI/NVENC.
 """
 import argparse
 from pathlib import Path
 
+from core.hardware import get_profile
 from core.voice_clone import VoiceCloner
 from core.subtitles import SubtitleGenerator
 from core.video_maker import VideoMaker
@@ -44,19 +46,26 @@ Exemples :
     parser.add_argument("--bg-color", default="#1a1a2e", help="Couleur fond uni (hex)")
 
     # Paramètres TTS
+    parser.add_argument("--tts-mode", choices=["turbo", "quality"], default="turbo",
+                        help="Mode TTS : turbo (rapide, 350M) ou quality (multilingue, plus lent)")
     parser.add_argument("--exaggeration", type=float, default=0.6, help="Expressivité (0.0-1.5)")
     parser.add_argument("--cfg-weight", type=float, default=0.5, help="Fidélité texte (0.1-1.0)")
 
     # Paramètres vidéo
     parser.add_argument("--font-size", type=int, default=28, help="Taille police sous-titres")
     parser.add_argument("--sub-style", choices=["tiktok", "classic"], default="tiktok")
-    parser.add_argument("--whisper-model", default="large-v3", help="Modèle Whisper")
+    parser.add_argument("--whisper-model", default="large-v3-turbo",
+                        help="Modèle Whisper (large-v3-turbo, large-v3, medium, small)")
 
     args = parser.parse_args()
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
+    # Afficher le profil matériel détecté
+    hw = get_profile()
     print("=" * 60)
     print("🎬 TikTok Voice Generator — Pipeline Automatisé")
+    print("=" * 60)
+    print(hw.summary())
     print("=" * 60)
 
     # ── 1. Fond automatique ───────────────────────────────────────────
@@ -86,8 +95,9 @@ Exemples :
         bg_type = "none"
 
     # ── 2. Voix clonée ────────────────────────────────────────────────
-    print("\n📌 Étape 2/4 — Clonage vocal (Chatterbox Multilingual)")
-    cloner = VoiceCloner()
+    tts_label = "Chatterbox-Turbo" if args.tts_mode == "turbo" else "Chatterbox Multilingual"
+    print(f"\n📌 Étape 2/4 — Clonage vocal ({tts_label})")
+    cloner = VoiceCloner(mode=args.tts_mode)
     audio_path = "output/speech.wav"
     cloner.generate(
         text=args.text,
@@ -99,7 +109,7 @@ Exemples :
     )
 
     # ── 3. Sous-titres ────────────────────────────────────────────────
-    print("\n📌 Étape 3/4 — Sous-titres (Faster-Whisper)")
+    print(f"\n📌 Étape 3/4 — Sous-titres (Faster-Whisper {args.whisper_model})")
     sub_gen = SubtitleGenerator(model_size=args.whisper_model)
     srt_path = "output/subtitles.srt"
     sub_gen.generate_srt(audio_path, srt_path, language=args.lang, style=args.sub_style)

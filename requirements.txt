@@ -1,6 +1,31 @@
+# ── TikTok Voice Generator — Dépendances ─────────────────
+# Compatible : Ubuntu 22.04+ / Windows 10+ / macOS
+# GPU : ROCm (AMD), CUDA (NVIDIA), ou CPU fallback
+
+# TTS — Clonage vocal (23 langues, MIT license)
 chatterbox-tts>=0.1.6
+
+# STT — Sous-titres avec timestamps mot par mot
 faster-whisper>=1.0.0
+
+# Interface web
 gradio>=5.0.0
+
+# Audio manipulation
 pydub>=0.25.1
+
+# Calcul numérique
 numpy>=1.26.0
+
+# HTTP (Pexels API + téléchargements)
 requests>=2.31.0
+
+# ── Notes d'installation GPU ─────────────────────────────
+# AMD ROCm (RX 6950 XT, etc.) :
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
+#
+# NVIDIA CUDA :
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#
+# CPU uniquement :
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu

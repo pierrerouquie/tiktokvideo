@@ -2,10 +2,12 @@
 """
 🎬 TikTok Voice Generator — CLI
 Génère une vidéo TikTok en une commande. Tout est automatisé.
+Optimisé : auto-détection GPU (ROCm/CUDA), multi-threading, VAAPI/NVENC.
 """
 import argparse
 from pathlib import Path
 
+from core.hardware import get_profile
 from core.voice_clone import VoiceCloner
 from core.subtitles import SubtitleGenerator
 from core.video_maker import VideoMaker
@@ -55,8 +57,12 @@ Exemples :
     args = parser.parse_args()
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
+    # Afficher le profil matériel détecté
+    hw = get_profile()
     print("=" * 60)
     print("🎬 TikTok Voice Generator — Pipeline Automatisé")
+    print("=" * 60)
+    print(hw.summary())
     print("=" * 60)
 
     # ── 1. Fond automatique ───────────────────────────────────────────

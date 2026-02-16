@@ -1,14 +1,24 @@
 """
 🎬 TikTok Voice Generator — Interface Web (Gradio)
 Pipeline 100% automatisé : Texte → Fond auto → Voix clonée → Sous-titres → Vidéo
+Optimisé : auto-détection GPU (ROCm/CUDA), multi-threading CPU, VAAPI/NVENC.
 """
 import gradio as gr
 from pathlib import Path
 
+from core.hardware import get_profile
 from core.voice_clone import VoiceCloner
 from core.subtitles import SubtitleGenerator
 from core.video_maker import VideoMaker
 from core.media_fetcher import MediaFetcher
+
+# Détection matérielle au démarrage
+hw = get_profile()
+print("=" * 60)
+print("🎬 TikTok Voice Generator — Démarrage")
+print("=" * 60)
+print(hw.summary())
+print("=" * 60)
 
 # Dossiers
 for d in ["output", "assets/voices", "assets/backgrounds"]:
@@ -114,10 +124,15 @@ def generate_video(
 
 with gr.Blocks(title="🎬 TikTok Voice Generator", theme=gr.themes.Soft()) as app:
 
+    # Info matérielle pour l'affichage
+    _gpu_info = f"{hw.gpu_name} ({hw.gpu_backend})" if hw.gpu_available else "CPU uniquement"
+    _enc_info = hw.ffmpeg_hw_accel.upper() if hw.ffmpeg_hw_accel else f"Software ({hw.ffmpeg_threads} threads)"
+
     gr.Markdown(
         "# 🎬 TikTok Voice Generator\n"
         "**100% automatisé** — Tape ton texte, donne ta voix, clique. C'est tout.\n\n"
-        "`Texte → Pexels (fond auto) → Chatterbox (voix) → Whisper (sous-titres) → FFmpeg (vidéo)`"
+        "`Texte → Pexels (fond auto) → Chatterbox (voix) → Whisper (sous-titres) → FFmpeg (vidéo)`\n\n"
+        f"**Hardware** : {_gpu_info} | Encodage : {_enc_info} | CPU : {hw.cpu_threads} threads"
     )
 
     with gr.Row():

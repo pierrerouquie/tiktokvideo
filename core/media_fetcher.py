@@ -2,15 +2,19 @@
 Module de récupération automatique de médias (vidéos/images).
 Utilise l'API Pexels (gratuite) pour trouver du contenu en rapport avec le texte.
 Extrait automatiquement les mots-clés du script pour la recherche.
+Optimisé : téléchargements concurrents, chunks plus gros (32KB).
 """
 import os
 import re
-import json
-import random
 import hashlib
-import requests
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
+
+import requests
+
+from core.hardware import get_profile
 
 
 # Mots vides français et anglais à exclure de l'extraction de mots-clés
@@ -59,6 +63,9 @@ class MediaFetcher:
         self.api_key = api_key or os.environ.get("PEXELS_API_KEY", "")
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._session = requests.Session()
+        if self.is_available:
+            self._session.headers["Authorization"] = self.api_key
 
     @property
     def is_available(self) -> bool:
@@ -116,7 +123,6 @@ class MediaFetcher:
         if not self.is_available:
             return []
 
-        headers = {"Authorization": self.api_key}
         params = {
             "query": query,
             "orientation": orientation,
@@ -126,7 +132,7 @@ class MediaFetcher:
 
         try:
             print(f"🔍 Recherche Pexels vidéos : '{query}'...")
-            resp = requests.get(self.PEXELS_VIDEO_URL, headers=headers, params=params, timeout=10)
+            resp = self._session.get(self.PEXELS_VIDEO_URL, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
@@ -176,7 +182,6 @@ class MediaFetcher:
         if not self.is_available:
             return []
 
-        headers = {"Authorization": self.api_key}
         params = {
             "query": query,
             "orientation": orientation,
@@ -186,7 +191,7 @@ class MediaFetcher:
 
         try:
             print(f"🔍 Recherche Pexels photos : '{query}'...")
-            resp = requests.get(self.PEXELS_PHOTO_URL, headers=headers, params=params, timeout=10)
+            resp = self._session.get(self.PEXELS_PHOTO_URL, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
@@ -227,11 +232,12 @@ class MediaFetcher:
 
         try:
             print(f"⬇️ Téléchargement : {url[:80]}...")
-            resp = requests.get(url, timeout=60, stream=True)
+            resp = self._session.get(url, timeout=60, stream=True)
             resp.raise_for_status()
 
             with open(filepath, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
+                # 32KB chunks — mieux pour NVMe/SSD
+                for chunk in resp.iter_content(chunk_size=32768):
                     f.write(chunk)
 
             print(f"✅ Téléchargé : {filepath}")
@@ -239,6 +245,17 @@ class MediaFetcher:
         except Exception as e:
             print(f"❌ Erreur téléchargement : {e}")
             return ""
+
+    def download_multiple(self, urls: list[str]) -> list[str]:
+        """Télécharge plusieurs fichiers en parallèle."""
+        results = []
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(self.download_file, url): url for url in urls}
+            for future in as_completed(futures):
+                path = future.result()
+                if path:
+                    results.append(path)
+        return results
 
     def auto_fetch_background(
         self,

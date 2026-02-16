@@ -25,7 +25,8 @@ for d in ["output", "assets/voices", "assets/backgrounds"]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
 # Modules (lazy loading pour les modèles lourds)
-cloner = VoiceCloner()
+# Chatterbox-Turbo par défaut (350M, 1-step, plus rapide)
+cloner = VoiceCloner(mode="turbo")
 video_maker = VideoMaker()
 media_fetcher = MediaFetcher()
 _subtitle_gen = None
@@ -34,7 +35,7 @@ _subtitle_gen = None
 def get_subtitle_gen() -> SubtitleGenerator:
     global _subtitle_gen
     if _subtitle_gen is None:
-        _subtitle_gen = SubtitleGenerator(model_size="large-v3")
+        _subtitle_gen = SubtitleGenerator(model_size="large-v3-turbo")
     return _subtitle_gen
 
 
@@ -131,7 +132,7 @@ with gr.Blocks(title="🎬 TikTok Voice Generator", theme=gr.themes.Soft()) as a
     gr.Markdown(
         "# 🎬 TikTok Voice Generator\n"
         "**100% automatisé** — Tape ton texte, donne ta voix, clique. C'est tout.\n\n"
-        "`Texte → Pexels (fond auto) → Chatterbox (voix) → Whisper (sous-titres) → FFmpeg (vidéo)`\n\n"
+        "`Texte → Pexels/Pixabay (fond auto) → Chatterbox-Turbo (voix) → Whisper v3-turbo (sous-titres) → FFmpeg (vidéo)`\n\n"
         f"**Hardware** : {_gpu_info} | Encodage : {_enc_info} | CPU : {hw.cpu_threads} threads"
     )
 
@@ -160,10 +161,10 @@ with gr.Blocks(title="🎬 TikTok Voice Generator", theme=gr.themes.Soft()) as a
             # Section fond automatique
             gr.Markdown("### 🖼️ Fond de la vidéo")
             auto_background = gr.Checkbox(
-                label="🔍 Fond automatique (Pexels API)",
+                label="🔍 Fond automatique (Pexels + Pixabay)",
                 value=media_fetcher.is_available,
                 info="Cherche automatiquement des visuels en rapport avec ton texte" if media_fetcher.is_available
-                    else "⚠️ Configure PEXELS_API_KEY pour activer (gratuit sur pexels.com/api)",
+                    else "⚠️ Configure PEXELS_API_KEY et/ou PIXABAY_API_KEY pour activer",
             )
             prefer_video_bg = gr.Checkbox(
                 label="🎥 Préférer les vidéos aux images",
@@ -216,7 +217,7 @@ with gr.Blocks(title="🎬 TikTok Voice Generator", theme=gr.themes.Soft()) as a
         "- **Voix** : 5-15s, sans bruit de fond, parle naturellement\n"
         "- **Expressivité** : 0.6-0.8 pour un ton TikTok dynamique\n"
         "- **Fond auto** : Crée un compte gratuit sur [pexels.com/api](https://www.pexels.com/api/) "
-        "et configure `PEXELS_API_KEY`\n"
+        "(`PEXELS_API_KEY`) et/ou [pixabay.com/api](https://pixabay.com/api/docs/) (`PIXABAY_API_KEY`)\n"
         "- **Texte** : 30-60s max pour le format court"
     )
 

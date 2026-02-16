@@ -1,6 +1,7 @@
 """
-Génération de sous-titres avec Faster-Whisper (large-v3).
+Génération de sous-titres avec Faster-Whisper 1.2+ (large-v3-turbo).
 Produit des fichiers SRT avec timestamps mot par mot.
+large-v3-turbo : 6x plus rapide que large-v3, 809M params, -1-2% accuracy.
 Optimisé : utilise tous les threads CPU (Ryzen 7 5700X3D = 16 threads).
 Note : CTranslate2 (backend de Faster-Whisper) ne supporte pas ROCm,
        donc on utilise le CPU avec int8 quantization + multi-threading.
@@ -14,10 +15,11 @@ from core.hardware import get_profile
 class SubtitleGenerator:
     """Transcrit un audio en sous-titres SRT synchronisés."""
 
-    def __init__(self, model_size: str = "large-v3", device: str = "auto"):
+    def __init__(self, model_size: str = "large-v3-turbo", device: str = "auto"):
         """
         Args:
-            model_size: "large-v3" (meilleur), "medium", "small" (rapide)
+            model_size: "large-v3-turbo" (meilleur rapport qualité/vitesse, 6x plus rapide),
+                        "large-v3" (précision max), "medium", "small" (rapide)
             device: "cuda", "cpu", ou "auto"
         """
         hw = get_profile()
